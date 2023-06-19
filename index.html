@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Breakout Game</title>
+    <style>
+        body {
+            padding: 0;
+            margin: 0;
+            /* ここで背景画像を設定 */
+            background-image: url('assets/back02.png');
+            background-repeat: no-repeat;
+            background-size: cover;
+        }
+
+        #game {
+            width: 480px;
+            height: 640px;
+            margin: auto;
+            display: block;
+        }
+    </style>
+    <script src="phaser-master/dist/phaser.min.js"></script>
+</head>
+
+<body>
+    <div id="game"></div>
+
+    <script>
+        // Game screen size
+        const WINDOW_WIDTH = 480;
+        const WINDOW_HEIGHT = 640;
+
+        // Paddle parameters
+        const PADDLE_WIDTH = 100;
+        const PADDLE_HEIGHT = 20;
+
+        // Ball parameters
+        const BALL_SIZE = 15;
+
+        // Blocks parameters
+        const BLOCK_ROWS = 32; // 行
+        const BLOCK_COLS = 32; // 列
+        const BLOCK_WIDTH = 15; // 幅
+        const BLOCK_HEIGHT = 15; // 高さ
+
+        // Phaser game configuration
+        let config = {
+            type: Phaser.AUTO,
+            parent: 'game',
+            width: WINDOW_WIDTH,
+            height: WINDOW_HEIGHT,
+            physics: {
+                default: 'arcade',
+                arcade: {
+                    gravity: { y: 0 },
+                    debug: false
+                }
+            },
+            input: {
+                activePointers: 3, // for multi-touch
+                mouse: true, // to use mouse
+                windowEvents: true // to listen for window events
+            },
+            scene: {
+                preload: preload,
+                create: create,
+                update: update
+            }
+        };
+
+        // Game variables
+        let percentText, explanation, paddle, paddle2, ball, ball2, back_image, relives, blocksGroup, totalBlocks, gameText, lives = 3, isGameOver = false, isGameWon = false, isGameClear = false;
+        let particles;  // particlesをグローバル変数として定義する
+        let emitterConfig;  // エミッターの設定を保存するための変数を定義します。
+
+        let livesImages = [];
+        let gameState = "start"; // The initial state is "start"
+        let dataArray = [
+            // 各ブロックのデータが格納されているとします。
+            // ここでは"data"フィールドを持つオブジェクトの配列と仮定します。
+        ];
+        // Start the game
+        let game = new Phaser.Game(config);
+
+        function preload() {
+
+            // Load images
+            this.load.image('explanation', 'assets/explanation_screen.png');
+            this.load.image('paddle', 'assets/paddle_p.png');
+            this.load.image('paddle2', 'assets/paddle_p2.png');
+            this.load.image('ball', 'assets/ball2.png');
+            this.load.image('ball2', 'assets/ball3.png');
+            this.load.image('relives', 'assets/kuma.png');
+
+            this.load.image('particle_image', 'assets/kuma.png');
+
+            // ブロック崩した後のイメージ
+            this.load.image('back_image', 'assets/block_texture_back_airi.png');
+
+            // ブロック用画像
+            this.load.spritesheet('block_map', 'assets/block_texture_front_p2.png', { frameWidth: 15, frameHeight: 15 });
+
+            // Load JSON data
+            this.load.json('data', 'assets/block.tmj');
+
+            // Lode SE
+            this.load.audio('block_se', 'assets/block.mp3');
+            this.load.audio('wall_se', 'assets/wall.mp3');
+            this.load.audio('paddle_se', 'assets/paddle.mp3');
+            this.load.audio('clear_se', 'assets/clear.mp3');
+            this.load.audio('livesout_se', 'assets/out.mp3');
+
+        }
+
+        function create() {
+            // Enable input (mouse/touch) events
+            this.input.enabled = true;
+            this.input.mouse.disableContextMenu();
+            this.input.mouse.capture = true;
+
+            this.cameras.main.setBackgroundColor('#FFFFFF');  // Set the background color
+
+            // テキストオブジェクトを初期化（ゲームの初期化時など、一度だけ呼ばれる部分で）
+            percentText = this.add.text(240, 16, '破壊ブロック: 0%', { font: '24px Arial', fill: '#0000FF' }).setDepth(1);
+
+            // Create 背景
+
+            explanation = this.physics.add.sprite(0, 0, 'explanation').setDepth(2);;
+            explanation.setCollideWorldBounds(true);
+            explanation.setImmovable();
+
+            //    back_image = this.physics.add.sprite(0, 320, 'back_image');
+            back_image = this.physics.add.sprite(0, 0, 'back_image');
+            back_image.setCollideWorldBounds(true);
+            back_image.setImmovable();
+
+            // Create lives
+            //livesImages = [];
+            for (let i = 0; i < lives; i++) {
+                let image = this.add.image(32 + i * 32, 30, 'relives').setDepth(1);
+                livesImages.push(image);
+            }
+            // Create paddle
+            paddle = this.physics.add.sprite(WINDOW_WIDTH / 2, WINDOW_HEIGHT - PADDLE_HEIGHT, 'paddle');
+            paddle.setCollideWorldBounds(true);
+            paddle.setImmovable();
+
+            // Create ball
+            ball = this.physics.add.sprite(WINDOW_WIDTH / 2, WINDOW_HEIGHT - PADDLE_HEIGHT - BALL_SIZE - 3, 'ball');
+            ball.setCollideWorldBounds(true);
+            ball.setBounce(1);
+            ball.body.setSize(ball.body.width * 0.5, ball.body.height * 0.5);
+            ball.on('worldbounds', function (ball, up, down, left, right) {
+                if (up || left || right) {
+                    // 境界と衝突したときに効果音を再生
+                    this.sound.play('wall_se');
+                }
+            }, this);
+            // 境界との衝突で効果音を鳴らすためのフラグを設定
+            ball.setData('onWorldBounds', false);
+
+            // Get the loaded JSON data
+            let loadedData = this.cache.json.get('data');
+            dataArray = loadedData.layers[0].data;  // JSONデータの形式に合わせて適切に調整
+
+            // パーティクルエミッターの設定を作成
+            particles = this.add.particles('particle_image');
+
+            // Create blocks
+            blocksGroup = this.physics.add.group({
+                // Other properties...
+                immovable: true
+            });
+            // Game variables
+            resetBlocks.call(this);
+
+            this.physics.add.collider(ball, paddle, hitPaddle, null, this);
+
+            this.physics.add.collider(ball, blocksGroup, null, function (ball, block) {
+
+                onBlockDestroyedSE.call(this);
+                ball.setData('onBlockHit', true);
+
+                // ブロックを破壊する前に、ブロックに関連付けられた枠線も破壊する
+                block.getData('border').destroy();
+                // ブロックを破壊する
+                block.destroy();
+
+                // ブロックが消えるたびに以下のコードを実行
+                let remainingBlocks = blocksGroup.countActive(true);
+                let percentage = ((totalBlocks - remainingBlocks) / totalBlocks) * 100;
+
+                // パーセントを表示
+                percentText.setText('破壊ブロック: ' + percentage.toFixed(0) + '%');
+
+                // ボールが貫通モードである場合、反射しないようにする
+                if (ball.getData('isPenetrating')) {
+                    return false;
+                } else {
+                    // 通常の反射処理（これが必要な場合）
+                    return true;
+                }
+            }, this);
+        }
+
+
+        function update() {
+            switch (gameState) {
+                case "start":
+                    // Control paddle and release the ball on click
+                    paddle.x = this.input.mousePointer.x;
+                    if (paddle.x < PADDLE_WIDTH / 2) { paddle.x = PADDLE_WIDTH / 2; }
+                    else if (paddle.x > WINDOW_WIDTH - PADDLE_WIDTH / 2) { paddle.x = WINDOW_WIDTH - PADDLE_WIDTH / 2; }
+
+                    // Release ball
+                    if (!ball.body.velocity.x && !ball.body.velocity.y) {
+                        ball.x = paddle.x;
+                        this.input.once('pointerup', function (pointer) {
+                            ball.setVelocityY(-300);
+                            let random = Math.random() < 0.5 ? -1 : 1;
+                            ball.setVelocityX(200 * random);
+                            gameState = "playing";
+                            // 説明画面消す
+                            explanation.setVisible(false);
+                        });
+                    }
+                    break;
+
+                case "playing":
+                    // パドルの速度をリセット
+                    paddle.setVelocity(0);
+                    // Break blocks and manage lives
+                    // If all lives are lost, change game state to "gameover"
+                    // If a certain number of blocks are broken, change game state to "cleared"
+
+                    // ボールがワールドの境界と衝突したときに効果音を再生する
+                    if (!ball.body.blocked.none && !ball.getData('onWorldBounds')) {
+                        // ブロックとパドルに衝突していない場合のみ、境界衝突音を再生
+                        if (!ball.getData('onBlockHit')) {
+                            //    this.sound.play('wall_se');
+                            onReflectionWallSE.call(this);
+                        }
+                        ball.setData('onWorldBounds', true);
+                    } else if (ball.body.blocked.none) {
+                        ball.setData('onWorldBounds', false);
+                        ball.setData('onBlockHit', false); // ブロックとの衝突状態をリセット
+                    }
+                    // Control paddle and release the ball on click
+                    paddle.x = this.input.mousePointer.x;
+                    if (paddle.x < PADDLE_WIDTH / 2) { paddle.x = PADDLE_WIDTH / 2; }
+                    else if (paddle.x > WINDOW_WIDTH - PADDLE_WIDTH / 2) { paddle.x = WINDOW_WIDTH - PADDLE_WIDTH / 2; }
+
+
+                    // Lose life
+                    if (ball.y + 5 > WINDOW_HEIGHT) {
+                        lives--;
+                        // ボールの画像を元に戻し、貫通モードを無効にする
+                        ball.setTexture('ball');
+                        ball.setData('isPenetrating', false);
+
+                        if (livesImages.length > 0) {
+                            onLivesOutSE.call(this);
+                            let lastImage = livesImages.pop(); // remove the last life image
+                            lastImage.destroy(); // destroy the image
+                        }
+                        if (lives === 0) {
+                            gameOver.call(this);
+                            gameState = "cleared";
+                            // Handle game over here...
+                        } else {
+                            ball.setVelocity(0, 0);
+                            ball.setPosition(paddle.x, WINDOW_HEIGHT - PADDLE_HEIGHT - BALL_SIZE - 3);
+                            gameState = "start";
+                        }
+                    }
+
+                    // Win game
+                    if (!isGameOver && !isGameWon && blocksGroup.countActive(true) <= totalBlocks * 0.1) {
+                        gameWon.call(this); // call the gameWon function
+                        gameState = "cleared";
+                    }
+                    break;
+
+                case "cleared":
+                    // Display the game cleared message and wait for click
+                    // If clicked, change game state to "start"
+                    if (isGameClear) {
+                        this.input.once('pointerup', function (pointer) {
+                            if (isGameClear) {
+                                gameClear.call(this);
+                                gameState = "start";
+                                // 説明画面表示
+                                explanation.setVisible(true);
+                            }
+                        }, this); // コールバックのコンテクストを明示的に指定します。
+                    }
+                    break;
+
+                case "gameover":
+                    // Display the game over message and wait for click
+                    // If clicked, change game state to "start"
+                    if (isGameOver) {
+                        // Handle game over here...
+                        this.input.once('pointerup', function (pointer) {
+                            gameState = "start";
+                            // 説明画面表示
+                            explanation.setVisible(true);
+                        }, this); // コールバックのコンテクストを明示的に指定します。
+                    }
+                    break;
+
+                default:
+                    // Undefined game state
+                    console.warn(`Unexpected gameState "${gameState}"`);
+                    break;
+            }
+        }
+
+        function hitPaddle(ball, paddle) {
+
+            //       this.cameras.main.shake(100, 0.01);
+
+            // パドルの画像を変更する
+            paddle.setTexture('paddle2');
+
+            // 0.1秒後にパドルの画像を元に戻す
+            this.time.addEvent({
+                delay: 100, // 0.1秒後
+                callback: function () {
+                    paddle.setTexture('paddle'); // 元のパドルの画像に戻す
+                },
+                callbackScope: this
+            });
+
+            // パドルの中心からのボールの位置を計算します
+            let diff = 0;
+
+            // パドルの中央に当たった場合
+            if (Math.abs(ball.x - paddle.x) < ball.width / 2) {
+
+                // ボールの画像を変更し、貫通モードを有効にする
+                ball.setTexture('ball2');
+                ball.setData('isPenetrating', true);
+
+                // ボールがちょうどパドルの上に落ちた場合、ランダムなX方向に反射
+                ball.setVelocityX(-500 + Math.random() * 1000);
+            } else {
+                // ボールの画像を元に戻し、貫通モードを無効にする
+                ball.setTexture('ball');
+                ball.setData('isPenetrating', false);
+
+                if (ball.x < paddle.x) {
+                    // ボールがパドルの左側に衝突
+                    diff = paddle.x - ball.x;
+                    ball.setVelocityX(-10 * diff);
+                } else if (ball.x > paddle.x) {
+                    // ボールがパドルの右側に衝突
+                    diff = ball.x - paddle.x;
+                    ball.setVelocityX(10 * diff);
+                }
+            }
+            // パドルの速度を反射速度に加算
+            ball.setVelocityX(ball.body.velocity.x + paddle.body.velocity.x);
+
+            onReflectionPaddleSE.call(this);
+            ball.setData('onBlockHit', true);
+        }
+
+        function hitBlock(ball, block) {
+        }
+
+        function resetLives() {
+            // Step 1: Reset the lives variable
+            lives = 3;
+
+            // Step 2: Destroy all existing life images
+            for (let i = 0; i < livesImages.length; i++) {
+                livesImages[i].destroy();
+            }
+            // Clear the array
+            livesImages.length = 0;
+
+            // Step 3: Add new life images
+            for (let i = 0; i < lives; i++) {
+                let image = this.add.image(32 + i * 32, 30, 'relives').setDepth(1);
+                livesImages.push(image);
+            }
+        }
+
+        function resetBlocks() {
+            // Step 1: Destroy all existing blocks
+            blocksGroup.clear(true, true);
+
+            // Step 2: Reset total blocks counter
+            totalBlocks = 0;
+
+            // Step 3: Add new blocks
+            let offsetX = (WINDOW_WIDTH - BLOCK_WIDTH * BLOCK_COLS) / 2;
+            let offsetY = (WINDOW_HEIGHT - BLOCK_HEIGHT * BLOCK_ROWS) / 2;
+
+            for (let y = 0; y < BLOCK_ROWS; y++) {
+                for (let x = 0; x < BLOCK_COLS; x++) {
+                    let i = y * BLOCK_COLS + x;
+                    if (dataArray[i] !== 0) { // Check if the block is not transparent
+                        let block = this.physics.add.sprite(x * BLOCK_WIDTH + BLOCK_WIDTH / 2 + offsetX, (y * BLOCK_HEIGHT + BLOCK_HEIGHT / 2 + offsetY) - 80, 'block_map', i);
+                        block.body.setSize(block.body.width * 0.9, block.body.height * 0.9);
+                        blocksGroup.add(block);  // Add the block to the group
+                        totalBlocks++; // increment the count of total blocks
+
+                        // create a border around the block
+                        let graphics = this.add.graphics();
+                        graphics.lineStyle(0.5, 0x0077FF, 0.7);  // set line style (width, color, alpha)
+                        graphics.strokeRect(block.x - block.width / 2, block.y - block.height / 2, block.width, block.height);
+
+                        // store the graphics object in the block's data
+                        block.setData('border', graphics);
+                    }
+                }
+            }
+        }
+
+        // Add gameWon function
+        function gameOver() {
+            isGameOver = true;
+            isGameClear = true;
+            // ball stop
+            ball.setVelocity(0, 0);
+            // Hide ball and paddle
+            ball.setVisible(false);
+
+            gameText = this.add.text(WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2, 'Game Over!', { fontSize: '64px', fill: '#FF0000' });
+            gameText.setOrigin(0.5, 0.5);
+        }
+
+        // Add gameWon function
+        function gameWon() {
+            isGameWon = true;
+            isGameClear = true;
+            // Pause the scene
+            //            this.scene.pause();
+
+            // Destroy all remaining blocks
+            blocksGroup.children.iterate(function (block) {
+                if (block) {
+                    block.disableBody(true, true);
+                    // ブロックを破壊する前に、ブロックに関連付けられた枠線も破壊する
+                    block.getData('border').destroy();
+                }
+            });
+
+            // ball stop
+            ball.setVelocity(0, 0);
+            // Hide ball and paddle
+            ball.setVisible(false);
+            paddle.setVisible(false);
+
+            // Display a winning message
+            gameText = this.add.text(WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2, 'You Win!', { fontSize: '64px', fill: '#00FF00' });
+            gameText.setOrigin(0.5, 0.5);
+
+            onGameClearSE.call(this);
+        }
+
+        function gameClear() {
+
+            gameText.destroy();
+
+            // Reset game state
+            isGameOver = false;
+            isGameWon = false;
+            isGameClear = false;
+
+            // Destroy all remaining blocks
+            blocksGroup.children.iterate(function (block) {
+                if (block) {
+                    block.disableBody(true, true);
+                    // ブロックを破壊する前に、ブロックに関連付けられた枠線も破壊する
+                    block.getData('border').destroy();
+                }
+            });
+
+            ball.setVelocity(0, 0);
+            ball.setPosition(paddle.x, WINDOW_HEIGHT - PADDLE_HEIGHT - BALL_SIZE - 3);
+
+            // ボールの画像を元に戻し、貫通モードを無効にする
+            ball.setTexture('ball');
+            ball.setData('isPenetrating', false);
+
+            ball.setVisible(true);
+            paddle.setVisible(true);
+
+            // 
+            resetLives.call(this);
+            resetBlocks.call(this);
+
+            percentText.setText('破壊ブロック: 0%');
+        }
+
+
+        // ブロックが破壊されたときに呼び出されるSE関数
+        function onBlockDestroyedSE() {
+            let sound = this.sound.add('block_se');
+            sound.play();
+        }
+
+        // 壁当たったときに呼び出されるSE関数
+        function onReflectionWallSE() {
+            let sound = this.sound.add('wall_se');
+            sound.play();
+
+        }// パドル当たったときに呼び出されるSE関数
+        function onReflectionPaddleSE() {
+            let sound = this.sound.add('paddle_se');
+            sound.play();
+        }
+
+        // ゲームクリアに呼び出されるSE関数
+        function onGameClearSE() {
+            let sound = this.sound.add('clear_se');
+            sound.play();
+        }
+
+        // 残機が減る時に呼び出されるSE関数
+        function onLivesOutSE() {
+            let sound = this.sound.add('livesout_se');
+            sound.play();
+        }
+    </script>
+</body>
+
+</html>
